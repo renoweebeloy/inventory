@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Inventory Flow & Supply Chain Simulation</title>
+    <style>
+        * { box-sizing: border-box; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        body { background: #f0f2f5; margin: 0; padding: 20px; color: #1c2d42; }
+        .container { max-width: 950px; margin: 0 auto; background: white; padding: 25px; border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.08); }
+        h2 { text-align: center; margin-top: 0; color: #0f172a; font-size: 1.5rem; }
+        
+        .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 20px; }
+        .stat-card { background: #f8fafc; padding: 15px; border-radius: 8px; text-align: center; border: 1px solid #e2e8f0; }
+        .stat-value { font-size: 1.6rem; font-weight: 700; color: #2563eb; }
+        .stat-label { font-size: 0.75rem; color: #64748b; text-transform: uppercase; font-weight: 600; margin-top: 4px; }
+        .stat-card.alert .stat-value { color: #dc2626; }
+        .stat-card.warning .stat-value { color: #d97706; }
+
+        .main-layout { display: grid; grid-template-columns: 1fr 300px; gap: 20px; }
+        @media(max-width: 768px) { .main-layout { grid-template-columns: 1fr; } }
+
+        .canvas-container { position: relative; }
+        canvas { width: 100%; height: 320px; background: #0f172a; border-radius: 8px; display: block; }
+
+        .controls { background: #f8fafc; padding: 18px; border-radius: 8px; border: 1px solid #e2e8f0; }
+        .control-group { margin-bottom: 16px; }
+        label { display: flex; justify-content: space-between; font-weight: 600; font-size: 0.85rem; margin-bottom: 6px; color: #334155; }
+        input[type="range"] { width: 100%; accent-color: #2563eb; cursor: pointer; }
+        
+        .status-box { margin-top: 15px; padding: 10px; border-radius: 6px; text-align: center; font-weight: bold; font-size: 0.85rem; }
+        .status-normal { background: #dcfce7; color: #166534; }
+        .status-ordering { background: #fef3c7; color: #92400e; }
+        .status-out { background: #fee2e2; color: #991b1b; }
+
+        .btn-group { display: flex; gap: 10px; margin-top: 15px; }
+        button { flex: 1; padding: 10px; border: none; border-radius: 6px; font-weight: bold; cursor: pointer; transition: 0.2s; }
+        .btn-pause { background: #0f172a; color: white; }
+        .btn-reset { background: #e2e8f0; color: #334155; }
+        button:hover { opacity: 0.9; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h2>📦 Fast Food Inventory & Supply Chain Simulator</h2>
+
+    <div class="stats-grid">
+        <div class="stat-card">
+            <div class="stat-value" id="stockVal">80</div>
+            <div class="stat-label">Current Stock</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-value" id="salesVal">0</div>
+            <div class="stat-label">Total Sales</div>
+        </div>
+        <div class="stat-card alert">
+            <div class="stat-value" id="stockoutVal">0</div>
+            <div class="stat-label">Stockout Incidents</div>
+        </div>
+        <div class="stat-card warning">
+            <div class="stat-value" id="wasteVal">0</div>
+            <div class="stat-label">Wasted / Spoilage</div>
+        </div>
+    </div>
+
+    <div class="main-layout">
+        <div class="canvas-container">
+            <canvas id="simCanvas"></canvas>
+        </div>
+
+        <div class="controls">
+            <div class="control-group">
+                <label>Demand Rate: <span id="demandDisp">5</span> units/s</label>
+                <input type="range" id="demandInput" min="1" max="20" value="5">
+            </div>
+
+            <div class="control-group">
+                <label>Reorder Point (ROP): <span id="ropDisp">30</span> units</label>
+                <input type="range" id="ropInput" min="10" max="80" value="30">
+            </div>
+
+            <div class="control-group">
+                <label>Batch Order Size: <span id="batchDisp">50</span> units</label>
+                <input type="range" id="batchInput" min="20" max="100" value="50">
+            </div>
+
+            <div class="control-group">
+                <label>Supplier Lead Time: <span id="leadDisp">3.0</span> sec</label>
+                <input type="range" id="leadInput" min="1" max="8" step="0.5" value="3">
+            </div>
+
+            <div id="statusBox" class="status-box status-normal">SYSTEM OPTIMAL</div>
+
+            <div class="btn-group">
+                <button class="btn-pause" id="pauseBtn">Pause</button>
+                <button class="btn-reset" id="resetBtn">Reset</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    const canvas = document.getElementById('simCanvas');
+    const ctx = canvas.getContext('2d');
+
+    // State Variables
+    const maxCapacity = 150;
+    let currentStock = 80;
+    let totalSales = 0;
+    let stockoutCount = 0;
+    let wasteCount = 0;
+
+    let isPaused = false;
+    let isOrderPending = false;
+    let orderTimer = 0;
+
+    const historyMax = 120; // Number of graph points
+    let history = new Array(historyMax).fill(currentStock);
+
+    // Inputs
+    const demandInput = document.getElementById('demandInput');
+    const ropInput = document.getElementById('ropInput');
+    const batchInput = document.getElementById('batchInput');
+    const leadInput = document.getElementById('leadInput');
+
+    // UI Displays
+    const stockVal = document.getElementById('stockVal');
+    const salesVal = document.getElementById('salesVal');
+    const stockoutVal = document.getElementById('stockoutVal');
+    const wasteVal = document.getElementById('wasteVal');
+    const statusBox = document.getElementById('statusBox');
+
+    // Link Inputs to Labels
+    demandInput.oninput = () => document.getElementById('demandDisp').innerText = demandInput.value;
+    ropInput.oninput = () => document.getElementById('ropDisp').innerText = ropInput.value;
+    batchInput.oninput = () => document.getElementById('batchDisp').innerText = batchInput.value;
+    leadInput.oninput = () => document.getElementById('leadDisp').innerText = parseFloat(leadInput.value).toFixed(1);
+
+    document.getElementById('pauseBtn').onclick = (e) => {
+        isPaused = !isPaused;
+        e.target.innerText = isPaused ? 'Resume' : 'Pause';
+    };
+
+    document.getElementById('resetBtn').onclick = resetSimulation;
+
+    function resetSimulation() {
+        currentStock = 80;
+        totalSales = 0;
+        stockoutCount = 0;
+        wasteCount = 0;
+        isOrderPending = false;
+        orderTimer = 0;
+        history = new Array(historyMax).fill(currentStock);
+        updateUI();
+    }
+
+    // Resize canvas properly
+    function resizeCanvas() {
+        canvas.width = canvas.clientWidth;
+        canvas.height = canvas.clientHeight;
+    }
+    window.addEventListener('resize', resizeCanvas);
+    resizeCanvas();
+
+    // Simulation Loop (Runs 10 times per second)
+    const tickRate = 100; // ms
+    setInterval(() => {
+        if (isPaused) return;
+
+        const demandRate = parseFloat(demandInput.value);
+        const rop = parseFloat(ropInput.value);
+        const batchSize = parseFloat(batchInput.value);
+        const leadTime = parseFloat(leadInput.value);
+
+        // 1. Demand Consumption
+        const consumed = demandRate / (1000 / tickRate);
+        if (currentStock > 0) {
+            if (currentStock >= consumed) {
+                currentStock -= consumed;
+                totalSales += consumed;
+            } else {
+                totalSales += currentStock;
+                currentStock = 0;
+            }
+        } else {
+            stockoutCount++;
+        }
+
+        // 2. Reorder Trigger
+        if (currentStock <= rop && !isOrderPending) {
+            isOrderPending = true;
+            orderTimer = leadTime;
+        }
+
+        // 3. Order Delivery Processing
+        if (isOrderPending) {
+            orderTimer -= tickRate / 1000;
+            if (orderTimer <= 0) {
+                currentStock += batchSize;
+                if (currentStock > maxCapacity) {
+                    wasteCount += (currentStock - maxCapacity);
+                    currentStock = maxCapacity;
+                }
+                isOrderPending = false;
+            }
+        }
+
+        // 4. Record History
+        history.push(currentStock);
+        if (history.length > historyMax) history.shift();
+
+        updateUI();
+        drawGraph();
+    }, tickRate);
+
+    function updateUI() {
+        stockVal.innerText = Math.round(currentStock);
+        salesVal.innerText = Math.round(totalSales);
+        stockoutVal.innerText = stockoutCount;
+        wasteVal.innerText = Math.round(wasteCount);
+
+        if (currentStock <= 0) {
+            statusBox.className = "status-box status-out";
+            statusBox.innerText = "CRITICAL: OUT OF STOCK!";
+        } else if (isOrderPending) {
+            statusBox.className = "status-box status-ordering";
+            statusBox.innerText = `ORDER IN TRANSIT (${orderTimer.toFixed(1)}s left)`;
+        } else {
+            statusBox.className = "status-box status-normal";
+            statusBox.innerText = "INVENTORY OPTIMAL";
+        }
+    }
+
+    function drawGraph() {
+        const w = canvas.width;
+        const h = canvas.height;
+        ctx.clearRect(0, 0, w, h);
+
+        const rop = parseFloat(ropInput.value);
+
+        // Draw Threshold Lines
+        // ROP Line (Red Dashed)
+        const ropY = h - (rop / maxCapacity) * h;
+        ctx.strokeStyle = '#ef4444';
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([5, 5]);
+        ctx.beginPath();
+        ctx.moveTo(0, ropY);
+        ctx.lineTo(w, ropY);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // ROP Label
+        ctx.fillStyle = '#ef4444';
+        ctx.font = '11px sans-serif';
+        ctx.fillText(`ROP (${rop})`, 10, ropY - 5);
+
+        // Draw Sawtooth Line Chart
+        ctx.beginPath();
+        ctx.lineWidth = 3;
+        ctx.strokeStyle = '#38bdf8';
+
+        for (let i = 0; i < history.length; i++) {
+            const x = (i / (historyMax - 1)) * w;
+            const y = h - (history[i] / maxCapacity) * h;
+
+            if (i === 0) ctx.moveTo(x, y);
+            else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+
+        // Fill Under Graph
+        ctx.lineTo(w, h);
+        ctx.lineTo(0, h);
+        ctx.fillStyle = 'rgba(56, 189, 248, 0.1)';
+        ctx.fill();
+    }
+</script>
+
+</body>
+</html>
